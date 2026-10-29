@@ -1,0 +1,12 @@
+flowchart LR
+    Mic([Microfone]) --> VAD[Detector de fala<br>por energia]
+    VAD --> STT[Transcrição<br>gemma4:e2b]
+    STT --> Wake{Conversa<br>aberta?}
+    Wake -- "não: procura<br>“Friday”" --> VAD
+    Wake -- sim --> Chat[Resposta<br>gemma4:e2b]
+    Chat -- frase a frase --> TTS[Voz em stream<br>lfm3-omni]
+    Chat --> Tr[Tradução<br>gemma4:e2b]
+    STT --> Fix[Correção<br>gemma4:e2b]
+    TTS --> Out([Alto-falante])
+    Tr --> Tela([Tela])
+    Fix --> Tela

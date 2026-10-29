@@ -46,20 +46,12 @@ reage ao estado real do app, e o volume do microfone e da voz dela mexe com a in
 
 ## Como funciona
 
-```mermaid
-flowchart LR
-    Mic([Microfone]) --> VAD[Detector de fala<br>por energia]
-    VAD --> STT[Transcrição<br>gemma4:e2b]
-    STT --> Wake{Conversa<br>aberta?}
-    Wake -- "não: procura<br>“Friday”" --> VAD
-    Wake -- sim --> Chat[Resposta<br>gemma4:e2b]
-    Chat -- frase a frase --> TTS[Voz em stream<br>lfm3-omni]
-    Chat --> Tr[Tradução<br>gemma4:e2b]
-    STT --> Fix[Correção<br>gemma4:e2b]
-    TTS --> Out([Alto-falante])
-    Tr --> Tela([Tela])
-    Fix --> Tela
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
+  <img src="docs/images/architecture-light.png" alt="Fluxo: microfone, detector de fala, transcrição; se a conversa estiver aberta, resposta, voz em stream e tradução; a correção sai da transcrição. Fora da conversa, só procura o nome Friday.">
+</picture>
+
+<sub>Fonte do diagrama: <a href="docs/architecture.mmd">docs/architecture.mmd</a> (Mermaid).</sub>
 
 | Papel | Modelo | Como |
 |---|---|---|
