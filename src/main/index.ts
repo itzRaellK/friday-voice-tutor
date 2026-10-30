@@ -42,10 +42,12 @@ function createWindow(): void {
 
 function registerIpc(): void {
   ipcMain.handle('chat:start', async (event, id: string, messages: ChatMessage[]) => {
-    await modelsReady()
     const controller = new AbortController()
     activeChats.set(id, controller)
     try {
+      // Registra antes do await para aceitar uma interrupção durante a preparação dos modelos.
+      await modelsReady()
+      if (controller.signal.aborted) return ''
       return await streamChat(messages, (token) => event.sender.send('chat:token', id, token), controller.signal)
     } catch (err) {
       if (controller.signal.aborted) return '' // interrompida pelo aluno: não é erro
@@ -60,10 +62,11 @@ function registerIpc(): void {
     return complete(messages, format)
   })
   ipcMain.handle('tts:stream', async (event, id: string, text: string, voice: string) => {
-    await modelsReady()
     const controller = new AbortController()
     activeSpeech.set(id, controller)
     try {
+      await modelsReady()
+      if (controller.signal.aborted) return
       await speakStream(text, voice, (chunk) => event.sender.send('tts:chunk', id, chunk), controller.signal)
     } catch (err) {
       if (!controller.signal.aborted) throw err // abortar faz parte de interromper a fala

@@ -1,3 +1,5 @@
+import { transcribeAudio } from './transcription'
+
 // Cliente mínimo do Ollama usado pelo main process.
 // Cada papel tem seu modelo: um modelo mais forte ouve e conversa, o lfm3-omni só dá voz ao texto.
 
@@ -124,6 +126,10 @@ export async function speak(text: string, voice: string): Promise<Uint8Array> {
 }
 
 export async function transcribe(wav: Uint8Array): Promise<string> {
+  return transcribeAudio(wav, transcribeChunk)
+}
+
+async function transcribeChunk(wav: Uint8Array): Promise<string> {
   const form = new FormData()
   form.append('model', MODELS.stt)
   form.append('file', new Blob([wav as BlobPart], { type: 'audio/wav' }), 'speech.wav')

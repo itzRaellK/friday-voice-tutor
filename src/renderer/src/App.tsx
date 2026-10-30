@@ -7,7 +7,7 @@ import { SettingsMenu } from './components/SettingsMenu'
 import type { OrbState } from './orb/OrbRenderer'
 import { LANGUAGES, detectLanguageSwitch, findLanguage, voiceFor, type Language, type VoiceGender } from './lib/languages'
 import { formatCorrection, greetingPrompt, replyReminder, tutorPrompt } from './lib/prompt'
-import { ReplyStream, cleanForSpeech } from './lib/reply'
+import { cleanForSpeech } from './lib/reply'
 import { whichLanguage } from './lib/languageId'
 import { reviewSentence, translateReply } from './lib/review'
 import { detectWake, isFarewell } from './lib/wakeword'
@@ -114,7 +114,8 @@ export function App(): React.JSX.Element {
       const reply: Message = { id: newId(), kind: 'assistant', raw: '', text: '', time: now, lang: practice.code, pending: true }
       setMessages((ms) => [...ms, userMsg, reply])
       setBusy(true)
-      player.current!.stop()
+      setOffline(false)
+      player.current!.stop('new-reply')
       if (activeReply.current) void window.api.abortChat(activeReply.current)
       activeReply.current = reply.id
 
@@ -125,72 +126,65 @@ export function App(): React.JSX.Element {
         .map((m) => ({ role: m.kind, content: m.correction ? `${m.raw}
 (Correction shown to the student: ${m.correction})` : m.raw }))
 
-      const stream = new ReplyStream()
-      const flush = (final: boolean): void => {
-        if (activeReply.current !== reply.id) return
-        for (const sentence of stream.takeSentences(final)) speak(sentence, practice)
-      }
-
-      const off = window.api.onToken((id, token) => {
-        if (id !== reply.id) return
-        stream.push(token)
-        patch(reply.id, { raw: stream.raw, text: stream.visible })
-        flush(false)
-      })
-      // O lembrete no fim pesa mais que o prompt inicial quando o histórico está em outro idioma.
-      const chat = window.api.startChat(reply.id, [
-        { role: 'system', content: tutorPrompt(mine, practice) },
-        ...history,
-        { role: 'system', content: replyReminder(practice) }
-      ])
-
-      // Se o aluno escreveu na língua de estudo, a frase é revisada em paralelo e a correção aparece
-      // quando chegar. Perguntas na própria língua dele não têm o que corrigir.
-      if (!opts.hidden && whichLanguage(content, mine, practice) === 'study') {
-        reviewSentence(window.api.complete, mine, practice, content)
-          .then((fix) => fix && patch(userMsg.id, { correction: formatCorrection(fix) }))
-          .catch((err) => console.error('Revisão falhou:', err))
-      }
-
+      let stage: 'text' | 'audio' = 'text'
       try {
-        const full = await chat
+        // A geração continua em stream no main, mas os tokens ficam fora da interface.
+        const full = await window.api.startChat(reply.id, [
+          { role: 'system', content: tutorPrompt(mine, practice) },
+          ...history,
+          { role: 'system', content: replyReminder(practice) }
+        ])
         if (activeReply.current !== reply.id) return // interrompida
-        // Os últimos tokens podem chegar depois da resposta do invoke; a resposta completa manda.
-        if (full.startsWith(stream.raw)) stream.push(full.slice(stream.raw.length))
-        flush(true)
-        patch(reply.id, { raw: stream.raw, text: stream.visible, pending: false })
+        const spoken = cleanForSpeech(full)
+        if (!spoken) throw new Error('O modelo não devolveu uma resposta.')
+        stage = 'audio'
+        const started = await player.current!.play(spoken, voiceFor(practice, VOICE))
+        if (!started || activeReply.current !== reply.id) return
+        // Revela a resposta somente quando todo o áudio estiver pronto e agendado para tocar.
+        const text = full.trim()
+        patch(reply.id, { raw: full, text, pending: false })
         setOffline(false)
-        // A tradução vem depois da resposta inteira, sem atrasar a voz.
-        if (whichLanguage(stream.visible, mine, practice) === 'study' && mine.code.split('-')[0] !== practice.code.split('-')[0]) {
-          translateReply(window.api.complete, stream.visible, mine, practice)
+
+        // Tarefas auxiliares começam depois da preparação da voz, sem disputar a síntese.
+        if (!opts.hidden && whichLanguage(content, mine, practice) === 'study') {
+          reviewSentence(window.api.complete, mine, practice, content)
+            .then((fix) => fix && patch(userMsg.id, { correction: formatCorrection(fix) }))
+            .catch((err) => console.error('Revisão falhou:', err))
+        }
+        if (whichLanguage(text, mine, practice) === 'study' && mine.code.split('-')[0] !== practice.code.split('-')[0]) {
+          translateReply(window.api.complete, text, mine, practice)
             .then((translation) => translation && patch(reply.id, { translation }))
             .catch((err) => console.error('Tradução falhou:', err))
         }
       } catch (err) {
         if (activeReply.current !== reply.id) return // conversa reiniciada ou interrompida
         console.error(err)
-        setOffline(true)
-        patch(reply.id, { pending: false, error: true, text: `Não consegui falar com o Ollama. Ele está rodando? (${(err as Error).message})` })
+        setOffline(stage === 'text')
+        patch(reply.id, {
+          pending: false, error: true,
+          text: stage === 'audio'
+            ? 'Não consegui preparar a voz. Tente enviar sua mensagem novamente.'
+            : `Não consegui falar com o Ollama. Ele está rodando? (${(err as Error).message})`
+        })
       } finally {
-        off()
         if (activeReply.current === reply.id) {
           activeReply.current = null
           setBusy(false)
         }
       }
     },
-    [speak]
+    []
   )
 
-  /** Para a fala e, se ainda estiver gerando, a resposta também (o texto já recebido fica). */
-  const interrupt = useCallback(() => {
-    player.current!.stop()
+  /** Cancela a preparação ou a fala. Respostas ainda não apresentadas são descartadas. */
+  const interrupt = useCallback((reason = 'user') => {
+    player.current!.stop(reason)
     const id = activeReply.current
     if (!id) return
     void window.api.abortChat(id)
     activeReply.current = null
     setBusy(false)
-    setMessages((ms) => ms.map((m) => (m.id === id ? { ...m, pending: false } : m)))
+    setMessages((ms) => ms.filter((m) => m.id !== id))
   }, [])
 
   const greet = useCallback(() => void send(greetingPrompt(state.current.lang), { hidden: true }), [send])
@@ -244,7 +238,7 @@ export function App(): React.JSX.Element {
     onSpeechEnd: () => setHearing(false),
     onUtterance: (wav) => void onUtteranceRef.current(wav),
     // Só dá para interromper a Friday dentro de uma conversa; em espera, a fala dela segue.
-    onBargeIn: () => state.current.conversation && interruptRef.current()
+    onBargeIn: () => state.current.conversation && interruptRef.current('microphone')
   })
 
   const startMic = useCallback(async () => {
@@ -311,7 +305,7 @@ export function App(): React.JSX.Element {
   }
 
   const newChat = (): void => {
-    interrupt()
+    interrupt('new-chat')
     closeConversation()
     setMessages([])
     state.current.messages = []
@@ -332,25 +326,25 @@ export function App(): React.JSX.Element {
   }
 
   const onReplay = (m: Message): void => {
-    player.current!.stop()
+    interrupt('replay')
     const spoken = cleanForSpeech(m.text)
     if (spoken) speak(spoken, findLanguage(m.lang) ?? lang)
   }
 
   // Tocar na esfera: interrompe se ela estiver falando; senão abre ou fecha a conversa por voz.
   const onOrb = (): void => {
-    if (voice !== 'idle' || busy) interrupt()
+    if (voice !== 'idle' || busy) interrupt('orb')
     else if (conversation) closeConversation()
     else if (!muted && !micError) openConversation()
   }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') player.current!.stop()
+      if (e.key === 'Escape') interrupt('escape')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [interrupt])
 
   const micLive = !muted && !micError
   const orbState: OrbState =
@@ -417,7 +411,7 @@ export function App(): React.JSX.Element {
       <div className="stage">
         <main className="main">
           <Orb state={orbState} level={level} onClick={onOrb} />
-          <Captions user={user} reply={reply} transcribing={transcribing} />
+          <Captions user={user ?? lastUser} reply={reply} transcribing={transcribing} thinking={busy} />
           <Composer disabled={busy || transcribing} muted={!micLive} conversation={conversation} onSubmit={(t) => void send(t)} onToggleMute={onToggleMute} />
         </main>
         <HistoryPanel

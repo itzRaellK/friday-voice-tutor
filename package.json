@@ -5,10 +5,15 @@
   "description": "Professor de idiomas estilo MSN com Ollama + lfm3-omni",
   "main": "./out/main/index.js",
   "scripts": {
+    "predev": "install-electron",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "prestart": "install-electron",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit",
+    "test:audio": "rolldown scripts/audio.test.ts --file out/tests/audio.test.mjs --platform node --format esm && node --test out/tests/audio.test.mjs",
+    "test:audio:electron": "npm run build && install-electron && electron scripts/test-audio-electron.cjs",
+    "diagnose": "rolldown scripts/diagnose.ts --file out/diagnostics/diagnose.mjs --platform node --format esm && node out/diagnostics/diagnose.mjs",
     "eval": "rolldown scripts/eval.ts --file out/eval/eval.mjs --platform node --format esm && node out/eval/eval.mjs"
   },
   "dependencies": {

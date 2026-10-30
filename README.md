@@ -21,6 +21,9 @@ Electron · React · TypeScript · Ollama (gemma4:e2b + lfm3-omni)
 
 - **Conversa por voz em tempo real.** O microfone fica em espera desde que o app abre. Diga "Friday",
   "Sexta-feira" ou "Sexta" e a conversa começa; dali em diante é só falar, sem repetir o nome.
+- **Espaço para construir sua fala.** A captura aguarda 3 segundos seguidos de silêncio e não encerra
+  sua vez por duração. Falas longas são transcritas em trechos internos e viram uma única mensagem;
+  a Friday só começa a responder depois de juntar tudo.
 - **Fala sempre na língua que você estuda.** É o que você ouve e o que aparece em destaque. Logo abaixo
   vem a tradução na sua língua, só na tela, para você entender sem quebrar a imersão.
 - **Corrige o que você diz.** Quando você fala ou escreve na língua de estudo, a frase corrigida aparece à
@@ -48,23 +51,32 @@ reage ao estado real do app, e o volume do microfone e da voz dela mexe com a in
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
-  <img src="docs/images/architecture-light.png" alt="Fluxo: microfone, detector de fala, transcrição; se a conversa estiver aberta, resposta, voz em stream e tradução; a correção sai da transcrição. Fora da conversa, só procura o nome Friday.">
+  <img src="docs/images/architecture-light.png" alt="Fluxo: microfone, detector de fala, transcrição, resposta e voz. Fora da conversa, só procura o nome Friday.">
 </picture>
 
 <sub>Fonte do diagrama: <a href="docs/architecture.mmd">docs/architecture.mmd</a> (Mermaid).</sub>
 
 | Papel | Modelo | Como |
 |---|---|---|
-| Ouvir | `gemma4:e2b` | `POST /v1/audio/transcriptions`, uma chamada por fala detectada |
-| Conversar | `gemma4:e2b` | `POST /api/chat` em stream, sem o modo "pensar" |
-| Traduzir a fala dela | `gemma4:e2b` | depois da resposta, sem atrasar a voz |
-| Corrigir a sua frase | `gemma4:e2b` | JSON com esquema fixo, em paralelo com a resposta |
-| Falar | `lfm3-omni` | `POST /v1/audio/speech` em stream: a voz começa antes de o áudio terminar de ser gerado |
+| Ouvir | `gemma4:e2b` | `POST /v1/audio/transcriptions`, trechos de até 28 s reunidos em uma transcrição por fala |
+| Conversar | `gemma4:e2b` | `POST /api/chat` em stream interno, sem o modo "pensar"; o texto fica oculto durante a preparação |
+| Traduzir a fala dela | `gemma4:e2b` | após preparar o áudio e apresentar a resposta |
+| Corrigir a sua frase | `gemma4:e2b` | JSON com esquema fixo, após preparar o áudio |
+| Falar | `lfm3-omni` | `POST /v1/audio/speech`; a resposta inteira toca depois de todo o áudio ficar pronto |
 
 Detalhes que fazem diferença:
 
-- **A voz não espera o texto inteiro.** Cada frase vai para a síntese assim que termina, e o áudio toca
-  enquanto ainda está sendo gerado, emendando as frases sem pausa.
+- **Tempo de fala e tamanho dos trechos são coisas separadas.** O Gemma 4 documenta até
+  [30 segundos de áudio por entrada](https://ai.google.dev/gemma/docs/capabilities/audio).
+  A captura fica aberta até 3 segundos de silêncio; depois, o app divide o áudio em trechos de até
+  28 segundos, preferindo pequenas pausas. Quando não encontra uma pausa na borda, usa uma breve
+  sobreposição e remove correspondências entre as transcrições. Esses trechos não disparam respostas
+  separadas. Gravações mais longas consomem mais RAM e levam mais tempo para transcrever.
+- **Texto e voz aparecem juntos.** A Friday gera o texto completo e depois prepara todo o áudio,
+  mantendo a esfera e o indicador **Pensando…** durante as duas etapas. Só depois apresenta o texto
+  e inicia a reprodução em um único buffer. A espera fica concentrada antes da resposta, evitando
+  texto adiantado e pausas de geração entre as frases. Esc ou uma interrupção cancela a preparação
+  sem revelar a resposta que ainda não foi apresentada.
 - **Nenhuma regra é escrita por idioma.** A língua de cada mensagem é identificada por um detector
   estatístico ([`eld`](https://github.com/nitotm/efficient-language-detector-js)), não pelo modelo. Se uma
   explicação ou tradução vier na língua errada, o app pede de novo.
@@ -93,6 +105,10 @@ npm run dev               # desenvolvimento, com hot reload
 npm run build && npm start
 ```
 
+O Electron 45 baixa o executável no primeiro uso. Os comandos `npm run dev` e `npm start` executam
+`install-electron` antes de abrir o app; a primeira execução precisa de internet. Se aparecer
+`Error: Electron uninstall`, rode `npx --no install-electron` e tente novamente.
+
 > Se o Electron abrir como Node puro ("Cannot read properties of undefined (reading 'whenReady')"), a
 > variável `ELECTRON_RUN_AS_NODE` está definida no seu terminal. Isso acontece em terminais abertos por
 > algumas extensões do VS Code; remova a variável antes de rodar.
@@ -114,6 +130,36 @@ npm run build && npm start
 
 Atalhos: **Esc** interrompe a fala; o botão do microfone liga e desliga a escuta; escrever funciona sempre.
 O histórico fica no painel à direita e vale só enquanto o app está aberto.
+
+## Diagnosticar pausas na voz
+
+```sh
+npm run diagnose
+```
+
+Com o Ollama aberto e os modelos `friday-brain` e `friday-voice` já criados pelo app, o comando mede
+a voz sozinha, junto com chat e revisão, e com três frases enviadas ao mesmo tempo. Evite conversar
+no app durante o teste. Usa texto sintético, sem gravar o microfone nem alterar os modelos.
+
+O relatório fica em `out/diagnostics/voice-latest.json`. `realTimeFactor` acima de 1 significa que a
+requisição levou mais tempo que a duração do áudio; em chamadas concorrentes, esse tempo também
+inclui espera na fila. O relatório compara a espera para tocar a frase completa com os cortes
+simulados do player anterior (`legacyStreaming`), sem medir a reprodução no Electron.
+Para testar outra voz, defina `FRIDAY_DIAG_SPEAKER` (por exemplo,
+`female-french`). `FRIDAY_DIAG_BRAIN` e `FRIDAY_DIAG_VOICE` permitem escolher os modelos do diagnóstico.
+
+Veja o [diagnóstico desta máquina em 29/10/2026](docs/diagnostico-voz.md).
+
+Para verificar os estados, a fila e os cancelamentos sem usar modelos ou microfone:
+
+```sh
+npm run test:audio            # player, captura longa e divisão/transcrição com áudio simulado
+npm run test:audio:electron   # interface real e Web Audio em janela oculta, com áudio sintético silencioso
+```
+
+No console do renderer, os registros `[Friday áudio]` mostram agendamento, estados e motivo de
+parada (`microphone`, `escape`, `orb`, `replay` ou `new-reply`), sem registrar o texto das falas.
+Se houver um corte por detecção do microfone, ele aparece como `stop` com motivo `microphone`.
 
 ## Medir a qualidade
 

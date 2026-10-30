@@ -9,9 +9,8 @@ const PRE_ROLL_S = 0.35 // áudio guardado de antes do início detectado, para n
 // Detectar uma interrupção leva ~1 s, então durante a fala dela guarda mais para trás.
 const PRE_ROLL_GUARDED_S = 1.5
 const START_FRAMES = 3 // ~130 ms acima do limiar para considerar que começou a falar
-const END_SILENCE_S = 0.8
+const END_SILENCE_S = 3
 const MIN_SPEECH_S = 0.35
-const MAX_SPEECH_S = 15
 const MIN_THRESHOLD = 0.012
 const NOISE_RATIO = 3
 // Enquanto a Friday fala, só uma voz bem mais forte (o aluno interrompendo) conta.
@@ -127,7 +126,8 @@ export class Listener {
     this.speechFrames++
     this.quiet = rms > threshold ? 0 : this.quiet + 1
     const duration = this.speechFrames * frameS
-    if (this.quiet * frameS >= END_SILENCE_S || duration >= MAX_SPEECH_S) this.finish(duration - this.quiet * frameS)
+    // Duração não encerra o turno: falas longas são divididas apenas na transcrição.
+    if (this.quiet * frameS >= END_SILENCE_S) this.finish(duration - this.quiet * frameS)
   }
 
   private keepPreRoll(frame: Float32Array, frameS: number): void {
